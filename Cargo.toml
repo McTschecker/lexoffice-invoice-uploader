@@ -1,0 +1,16 @@
+[package]
+name = "cli-lexuploader"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "1.0.149", features = ["derive"] }
+log = "0.4.17"
+log4rs = "1.2.0"
+text_io = "0.1.12"
+confy = "0.5.1"
+csv = "1.1.6"
+chrono = { version = "0.4.23", features = ["serde"] }
+rust_decimal = "1.27.0"
