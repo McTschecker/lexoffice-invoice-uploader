@@ -1,11 +1,22 @@
+const BASE_URL: &'static str = "https://api.lexoffice.io/v1/";
 
 pub mod invoice {
-    use chrono::{Datelike, NaiveDate};
-    use log::error;
+    use std::path::Path;
+    use chrono::{NaiveDate};
+    use log::{debug, error, info};
     use rust_decimal::Decimal;
     use serde::{Deserialize, Serialize};
-    use crate::invoice::german_date_format;
+    use crate::invoice::{german_date_format, BASE_URL};
     use crate::invoice::german_decimal_format;
+    use crate::settings::{Config};
+    use std::error;
+    use reqwest::Client;
+    use async_recursion::async_recursion;
+    use reqwest::{multipart, Body};
+    use tokio::fs::File;
+    use tokio_util::codec::{BytesCodec, FramedRead};
+
+    type Result<T> = std::result::Result<T, Box<dyn error::Error>>;
     #[derive(Debug, Serialize, Deserialize)]
     pub struct InvoiceCSV {
         #[serde(rename = "Rechnungsnummer")]
@@ -23,7 +34,11 @@ pub mod invoice {
         #[serde(rename = "Endbetrag", with = "german_decimal_format")]
         final_amount: Decimal,
         #[serde(rename = "Währung")]
-        currency: String
+        currency: String,
+        #[serde(rename = "Transaktionstyp")]
+        transaction_type: String,
+        #[serde(rename = "Rechnungsadresse")]
+        billing_adress: String,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +46,57 @@ pub mod invoice {
         #[serde(rename = "Rechnungsnummer")]
         invoice_number: String,
     }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct VoucherItem {
+        amount: Decimal,
+        #[serde(rename = "taxAmount")]
+        tax_amount: Decimal,
+        #[serde(rename = "taxRatePercent")]
+        tax_rate_percent: Decimal,
+        // Innergemeinschaftliche Lieferung
+        #[serde(rename = "categoryId")]
+        category_id: String
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct VoucherCreateRequest {
+        #[serde(rename = "type")]
+        type_of_voucher: String,
+        #[serde(rename = "voucherNumber")]
+        voucher_number: String,
+        #[serde(rename = "voucherDate")]
+        voucher_date: String,
+        #[serde(rename = "shippingDate")]
+        shipping_date: Option<String>,
+        #[serde(rename = "dueDate")]
+        due_date: Option<String>,
+        #[serde(rename = "totalGrossAmount")]
+        total_gross_amount: Decimal,
+        #[serde(rename = "totalTaxAmount")]
+        total_tax_amount: Decimal,
+        // if b2b then net otherwise gross
+        #[serde(rename = "taxType")]
+        tax_type: String,
+        #[serde(rename = "contactId")]
+        contact_id: String,
+        #[serde(rename = "voucherItems")]
+        voucher_items: Vec<VoucherItem>,
+    }
+
+    #[derive(Deserialize, Debug)]
+    struct VoucherCreationResponse {
+        id: String,
+        #[serde(rename = "resourceUri")]
+        #[allow(dead_code)]
+        resource_uri: String,
+    }
+
+    #[derive(Serialize, Deserialize, Debug)]
+    struct LexofficeError {
+        message: String,
+    }
+
 
     impl CompletedInvoices {
 
@@ -49,42 +115,115 @@ pub mod invoice {
             }
             return true;
         }
-
-        #[allow(dead_code)]
-        fn get_date_path(&self) -> String {
-            return format!("{}-{}/", self.invoice_date.month(), self.invoice_date.year());
+        pub fn get_invoice_date_formatted(&self) -> String {
+            self.invoice_date.format("%Y-%m-%d").to_string()
         }
-        #[allow(dead_code)]
+        fn get_invoice_prefix(&self, config: &mut Config) -> Result<String> {
+            // get the string before -
+            let prefix_string = self.invoice_number.split("-").next().expect("No prefix found. The invoice number must have a prefix separated by a -");
+            Ok(config.get_path(&prefix_string).expect("Error while getting prefix"))
+
+        }
+        fn get_shipping_date_formatted(&self) -> String {
+            self.delivery_date.format("%Y-%m-%d").to_string()
+        }
+
+        #[async_recursion]
+        pub async fn upload(&self, settings: &mut Config) -> Result<()>{
+            let file_path = format!("{}/{}/{}.pdf", self.get_invoice_prefix(settings)?, self.invoice_date.format("%m-%Y"), self.invoice_number);
+            let client = Client::new();
+            // check if the file exists
+            if !Path::new(&file_path).exists() {
+                error!("File {} does not exist!", file_path);
+                return Err("File does not exist!".into());
+            }
+
+            // check that the file is not empty and is smaller than 5 MB (limitation of lexofffice)
+            let metadata = std::fs::metadata(&file_path)?;
+            if metadata.len() == 0 || metadata.len() > 5_000_000 {
+                error!("File {} is empty or too large!", file_path);
+                return Err("File is empty or too large!".into());
+            }
+
+            // construct the upload request
+            let upload_req = VoucherCreateRequest{
+                type_of_voucher: "salesinvoice".to_string(),
+                voucher_number: self.invoice_number.clone(),
+                voucher_date: self.get_invoice_date_formatted(),
+                shipping_date: Some(self.get_shipping_date_formatted()),
+                due_date: None,
+                total_gross_amount: self.final_amount,
+                total_tax_amount: self.net-self.final_amount,
+                tax_type: if self.transaction_type == "b2b".to_string() { "net".to_string() } else { "gross".to_string() },
+                contact_id: settings.get_customer_id(&self.billing_adress)?,
+                voucher_items: vec![VoucherItem{
+                    amount: self.final_amount,
+                    tax_amount: self.net-self.final_amount,
+                    tax_rate_percent: self.vat,
+                    category_id: "9075a4e3-66de-4795-a016-3889feca0d20".to_string(),
+                }],
+            };
+            let res: reqwest::Response = client.post(format!("{}vouchers", BASE_URL))
+                .bearer_auth(&settings.api_key)
+                .json(&upload_req)
+                .send()
+                .await?;
+
+            if res.status() == 401 {
+                error!("API key is invalid! Please enter new one in the config file.");
+                let error_message: LexofficeError = res.json().await?;
+                error!("Error: {}", error_message.message);
+
+                settings.invalidate_api_key();
+                return self.upload(settings).await;
+            }
+            if res.status() != 200 {
+                error!("Error while uploading invoice {}, got status code {}!", self.invoice_number, res.status());
+                let error_message: LexofficeError = res.json().await?;
+                error!("Error: {}", error_message.message);
+                return Err("Error while uploading invoice!".into());
+            }
+
+            let result = res.json::<VoucherCreationResponse>().await?;
+            info!("Successfully created voucher with id {}", result.id);
+
+            debug!("Uploading file {} to voucher {}", file_path, result.id);
+
+            let url = format!("{}vouchers/{}/files", BASE_URL, result.id);
+
+
+            let file = File::open(&file_path).await?;
+
+            // read file body stream
+            let stream = FramedRead::new(file, BytesCodec::new());
+            let file_body = Body::wrap_stream(stream);
+
+            //make form part of file
+            let some_file = multipart::Part::stream(file_body)
+                .file_name("invoice.pdf")
+                .mime_str("application/pdf")?;
+
+            let form = multipart::Form::new()
+                .text("type", "voucher")
+                .part("file", some_file);
+
+            let upload_res = client.post(&url)
+                .bearer_auth(&settings.api_key)
+                .multipart(form)
+                .send()
+                .await?;
+
+            if upload_res.status() != 202 {
+                error!("Error during file upload");
+                return Err("Error during file upload".into());
+            }
+
+            info!("Successfully uploaded file {} to voucher {}", file_path, result.id);
+
+            Ok(())
+        }
         pub fn invoice_number(&self) -> &str {
             &self.invoice_number
-        }
-        #[allow(dead_code)]
-        pub fn internal_reference(&self) -> &Option<String> {
-            &self.internal_reference
-        }
-        #[allow(dead_code)]
-        pub fn invoice_date(&self) -> NaiveDate {
-            self.invoice_date
-        }
-        #[allow(dead_code)]
-        pub fn delivery_date(&self) -> NaiveDate {
-            self.delivery_date
-        }
-        #[allow(dead_code)]
-        pub fn net(&self) -> Decimal {
-            self.net
-        }
-        #[allow(dead_code)]
-        pub fn vat(&self) -> Decimal {
-            self.vat
-        }
-        #[allow(dead_code)]
-        pub fn final_amount(&self) -> Decimal {
-            self.final_amount
-        }
-        #[allow(dead_code)]
-        pub fn currency(&self) -> &str {
-            &self.currency
         }
     }
 

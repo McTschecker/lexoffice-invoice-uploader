@@ -1,16 +1,38 @@
 use std::process::exit;
-use log::{debug, error, info};
+use log::{debug, error, info, LevelFilter};
 use log4rs;
 use crate::invoice::invoice::{CompletedInvoices};
+use log4rs::append::console::ConsoleAppender;
+use log4rs::append::file::FileAppender;
+use log4rs::encode::pattern::PatternEncoder;
+use log4rs::config::{Appender, Config, Root};
 
 mod settings;
 mod invoice;
 
-fn main() {
-    log4rs::init_file("logging_config.yaml", Default::default()).unwrap();
+#[tokio::main]
+async fn main() {
+    // set up logging
+    let logfile = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new("{l} - {m}\n")))
+        .build("log/output.log").unwrap();
+
+    let console_appender = ConsoleAppender::builder()
+        .build();
+
     info!("Attempting to Load settings file");
 
-    let config = match settings::load_settings() {
+    let logconfig = Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .appender(Appender::builder().build("console", Box::new(console_appender)))
+        .build(Root::builder()
+            .appender("logfile")
+            .appender("console")
+            .build(LevelFilter::Info)).unwrap();
+
+    log4rs::init_config(logconfig).unwrap();
+
+    let mut config = match settings::load_settings() {
         Ok(config) => config,
         Err(e) => {
             error!("Error loading settings file: {}", e);
@@ -43,10 +65,23 @@ fn main() {
 
     info!("Found {} invoices to upload", to_upload.len());
     let mut invoices_uploaded = done_invoices;
+
     for invoice in to_upload {
         debug!("Uploading invoice {}", invoice.invoice_number());
         let time_start = std::time::Instant::now();
-        invoices_uploaded.push(CompletedInvoices::new(invoice));
+        let result =  invoice.upload(&mut config).await;
+
+        match result {
+            Err(_) => {
+                error!("Error uploading invoice {}", invoice.invoice_number());
+                continue;
+            },
+            Ok(()) => {
+                debug!("Invoice {} uploaded successfully", invoice.invoice_number());
+                invoices_uploaded.push(CompletedInvoices::new(invoice));
+            }
+        }
+
         info!("Uploaded invoice {} in {}ms", invoice.invoice_number(), time_start.elapsed().as_millis());
     }
 
