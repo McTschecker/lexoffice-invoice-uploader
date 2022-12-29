@@ -109,6 +109,13 @@ pub mod invoice {
     }
 
     impl InvoiceCSV {
+        pub fn get_invoice_number(&self) -> &String {
+            match &self.internal_reference {
+                Some(x) => x,
+                None => &self.invoice_number
+            }
+        }
+
         pub fn validate(&self) -> bool {
             if self.currency != "EUR" {
                 return false;
@@ -120,7 +127,7 @@ pub mod invoice {
         }
         fn get_invoice_prefix(&self, config: &mut Config) -> Result<String> {
             // get the string before -
-            let prefix_string = self.invoice_number.split("-").next().expect("No prefix found. The invoice number must have a prefix separated by a -");
+            let prefix_string = self.get_invoice_number().split("-").next().expect("No prefix found. The invoice number must have a prefix separated by a -");
             Ok(config.get_path(&prefix_string).expect("Error while getting prefix"))
 
         }
