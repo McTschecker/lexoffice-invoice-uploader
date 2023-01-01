@@ -4,6 +4,8 @@ Implements a voucher uploader to lexoffice in Rust.
 
 ## How to Use
 
+Download [here](https://github.com/McTschecker/lexoffice-invoice-uploader/releases/latest) use gnu_win for windows 
+
 Move executable to Invoices directory.
 
 Start the programm, to upload all invoices included in the `invoices.csv` file
