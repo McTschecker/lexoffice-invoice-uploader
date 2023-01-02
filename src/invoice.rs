@@ -109,11 +109,11 @@ pub mod invoice {
     }
 
     impl InvoiceCSV {
-        pub fn get_invoice_number(&self) -> &String {
+        pub fn get_invoice_number(&self) -> String {
             match &self.internal_reference {
                 Some(x) => x,
                 None => &self.invoice_number
-            }
+            }.trim().to_string()
         }
 
         pub fn validate(&self) -> bool {
