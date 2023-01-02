@@ -138,7 +138,7 @@ pub mod invoice {
 
         #[async_recursion]
         pub async fn upload(&self, settings: &mut Config) -> Result<()>{
-            let file_path = format!("{}/{}/{}.pdf", self.get_invoice_prefix(settings)?, self.invoice_date.format("%m-%Y"), self.get_invoice_number());
+            let file_path = format!("{}/{}/{}.pdf", self.get_invoice_prefix(settings)?, self.delivery_date.format("%m-%Y"), self.get_invoice_number());
             let client = Client::new();
             // check if the file exists
             if !Path::new(&file_path).exists() {
