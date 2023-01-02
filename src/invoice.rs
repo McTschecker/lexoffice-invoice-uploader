@@ -113,7 +113,7 @@ pub mod invoice {
             match &self.internal_reference {
                 Some(x) => x,
                 None => &self.invoice_number
-            }.trim().to_string()
+            }.clone().trim().to_string()
         }
 
         pub fn validate(&self) -> bool {
@@ -127,7 +127,8 @@ pub mod invoice {
         }
         fn get_invoice_prefix(&self, config: &mut Config) -> Result<String> {
             // get the string before -
-            let prefix_string = self.get_invoice_number().split("-").next().expect("No prefix found. The invoice number must have a prefix separated by a -");
+            let invoice_num = self.get_invoice_number();
+            let prefix_string = invoice_num.split("-").next().expect("No prefix found. The invoice number must have a prefix separated by a -");
             Ok(config.get_path(&prefix_string).expect("Error while getting prefix"))
 
         }
